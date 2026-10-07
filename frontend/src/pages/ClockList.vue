@@ -7,26 +7,43 @@ import { useStepStore } from '../stores/stepStore';
 import { useClockSearch } from '../hooks/useClockSearch';
 import ClockCard from '../components/common/ClockCard.vue';
 import { CLOCK_KINDS, CONDITION_GRADES, type ClockDraft, type ClockKind, type ConditionGrade } from '../types/clock';
+import { useStandardStore } from '../stores/standardStore';
+import { judgeRelease, releaseTagType } from '../utils/judgement';
+import { formatDate } from '../types/standard';
 
 const router = useRouter();
 const clockStore = useClockStore();
 const stepStore = useStepStore();
+const standardStore = useStandardStore();
 const { filters, result, options, reset } = useClockSearch();
 
-const REPAIR_STATES = ['未开工', '维修中', '待测试', '已完成'] as const;
+/** 台账分栏：可交付/待复核均由现行合格标准对最近一次测试重算得到 */
+const REPAIR_STATES = ['未开工', '维修中', '待测试', '可交付', '待复核'] as const;
 
 type RepairState = (typeof REPAIR_STATES)[number];
 
-/** 由工序与走时测试推导修复状态，用于台账分栏 */
+/** 由工序、走时测试与现行标准推导台账状态 */
 function repairStateOf(clockId: string): RepairState {
   const steps = stepStore.items.filter((s) => s.clockId === clockId);
   const tests = stepStore.tests.filter((t) => t.clockId === clockId);
   const done = steps.filter((s) => s.state === 'done').length;
   if (steps.length === 0) return '未开工';
-  if (done === steps.length && tests.length > 0) return '已完成';
-  if (done === steps.length) return '待测试';
-  if (done > 0) return '维修中';
-  return '未开工';
+  if (done < steps.length) return done > 0 ? '维修中' : '未开工';
+  if (tests.length === 0) return '待测试';
+  // 工序全部完成且有测试：以现行标准重算放行
+  const release = judgeRelease(tests, standardStore.items);
+  if (release.state === 'releasable') return '可交付';
+  if (release.state === 'review') return '待复核';
+  // blocked：现行标准下不达标，回到待测试/重调
+  return '待测试';
+}
+
+/** 台账卡片上的放行角标与判定依据 */
+function releaseOf(clockId: string) {
+  const tests = stepStore.tests.filter((t) => t.clockId === clockId);
+  if (tests.length === 0) return undefined;
+  const r = judgeRelease(tests, standardStore.items);
+  return { label: r.label, type: releaseTagType(r.state), reason: r.reason };
 }
 
 const columns = computed(() =>
@@ -79,6 +96,7 @@ async function submit() {
 onMounted(() => {
   void clockStore.load();
   void stepStore.load();
+  void standardStore.load();
 });
 </script>
 
@@ -89,8 +107,19 @@ onMounted(() => {
       <el-tag>共 {{ clockStore.items.length }} 台</el-tag>
       <el-tag type="info" effect="plain">筛选命中 {{ result.length }} 台</el-tag>
       <div class="spacer" />
+      <el-button @click="router.push('/standards')">合格标准</el-button>
       <el-button type="primary" @click="openDialog">建档</el-button>
     </div>
+
+    <el-alert
+      v-if="standardStore.current"
+      type="warning"
+      :closable="false"
+      show-icon
+      :title="`现行标准「${standardStore.current.name}」（${formatDate(
+        standardStore.current.effectiveAt,
+      )} 生效）：放行状态已按现行标准重算，老测试按当时版本判定、不再作为放行依据`"
+    />
 
     <el-card shadow="never" class="filters">
       <el-form :inline="true" @submit.prevent>
@@ -143,6 +172,7 @@ onMounted(() => {
           v-for="item in col.rows"
           :key="item.id"
           :item="item"
+          :release="releaseOf(item.id)"
           :footer="`工序 ${stepStore.items.filter((s) => s.clockId === item.id && s.state === 'done').length}/${
             stepStore.items.filter((s) => s.clockId === item.id).length
           } · 走时测试 ${stepStore.tests.filter((t) => t.clockId === item.id).length} 次`"
@@ -221,7 +251,7 @@ onMounted(() => {
 }
 .board {
   display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 12px;
 }
 .column {

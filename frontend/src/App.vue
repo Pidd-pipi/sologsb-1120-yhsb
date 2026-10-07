@@ -1,16 +1,19 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { readDbVersion } from './utils/db';
+import { STANDARDS_BROADCAST_KEY, useStandardStore } from './stores/standardStore';
 
 const route = useRoute();
 const router = useRouter();
+const standardStore = useStandardStore();
 
 const activeMenu = computed(() => {
   if (route.path.startsWith('/clocks')) return '/clocks';
   if (route.path.startsWith('/steps')) return '/steps/new';
   if (route.path.startsWith('/parts')) return '/parts';
   if (route.path.startsWith('/tests')) return '/tests';
+  if (route.path.startsWith('/standards')) return '/standards';
   return '/clocks';
 });
 
@@ -23,6 +26,23 @@ function onSelect(index: string) {
   }
   void router.push(index);
 }
+
+/**
+ * 跨页签同步：另一个页签提交了标准修改后，本页签重新拉取标准版本。
+ * 放行状态与单条判定均由 store 数据实时推导，拉取后台账/详情/走时单自动重算。
+ */
+function onStorage(event: StorageEvent) {
+  if (event.key === STANDARDS_BROADCAST_KEY) void standardStore.load();
+}
+
+onMounted(() => {
+  void standardStore.load();
+  window.addEventListener('storage', onStorage);
+});
+
+onUnmounted(() => {
+  window.removeEventListener('storage', onStorage);
+});
 </script>
 
 <template>
@@ -34,6 +54,7 @@ function onSelect(index: string) {
         <el-menu-item index="/steps/new">工序录入</el-menu-item>
         <el-menu-item index="/parts">零件清单</el-menu-item>
         <el-menu-item index="/tests">走时测试</el-menu-item>
+        <el-menu-item index="/standards">合格标准</el-menu-item>
       </el-menu>
       <el-tag size="small" effect="plain">本地结构版本 v{{ version }}</el-tag>
     </el-header>

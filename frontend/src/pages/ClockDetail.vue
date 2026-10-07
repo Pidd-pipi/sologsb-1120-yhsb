@@ -10,13 +10,17 @@ import StepSequence from '../components/common/StepSequence.vue';
 import RateChart from '../components/common/RateChart.vue';
 import StateBadge from '../components/common/StateBadge.vue';
 import { CONDITION_GRADES, type ConditionGrade } from '../types/clock';
-import { judgeTest } from '../types/test';
+import { formatDate } from '../types/standard';
+import { useStandardStore } from '../stores/standardStore';
+import { judgeBy, judgeRelease, judgeTestWith, verdictTagType } from '../utils/judgement';
+import type { TimekeepingTest } from '../types/test';
 
 const route = useRoute();
 const router = useRouter();
 const clockStore = useClockStore();
 const partStore = usePartStore();
 const stepStore = useStepStore();
+const standardStore = useStandardStore();
 
 const clockId = computed(() => String(route.params.id ?? ''));
 const clock = computed(() => clockStore.byId(clockId.value));
@@ -24,6 +28,32 @@ const { progress, steps, done, total, percent, current, gaps } = useRepairProgre
 const parts = computed(() => partStore.byClock(clockId.value));
 const tests = computed(() => stepStore.testsByClock(clockId.value));
 const activeTab = ref('steps');
+
+/** el-alert 配色（danger 在 el-alert 中叫 error） */
+function alertType(s: ReturnType<typeof judgeRelease>['state']) {
+  return s === 'blocked' ? 'error' : s === 'releasable' ? 'success' : s === 'review' ? 'warning' : 'info';
+}
+
+/** 放行状态：每次标准修改后按现行版本重算 */
+const release = computed(() => judgeRelease(tests.value, standardStore.items));
+
+/** 单条测试的历史判定（按保存/回填时绑定的版本） */
+function testJudgement(t: TimekeepingTest) {
+  return judgeTestWith(t, standardStore.items);
+}
+
+/** 单条测试对照现行标准的重算结论（与历史判定不同则给出对照提示） */
+function presentVerdict(t: TimekeepingTest) {
+  const std = standardStore.current;
+  if (!std) return undefined;
+  return { std, verdict: judgeBy(t.rate, t.beatError, t.amplitude, std) };
+}
+
+function bindSourceLabel(t: TimekeepingTest): string {
+  if (t.bindSource === 'current') return '保存时绑定';
+  if (t.bindSource === 'backfill') return '老数据按日期回填';
+  return '无版本记录';
+}
 
 async function finish(id: string) {
   await stepStore.finish(id);
@@ -55,6 +85,7 @@ onMounted(async () => {
   await clockStore.load();
   await partStore.load();
   await stepStore.load();
+  await standardStore.load();
 });
 </script>
 
@@ -72,6 +103,15 @@ onMounted(async () => {
     </div>
 
     <el-alert v-if="!clock" type="warning" :closable="false" title="未找到该钟表（可能已被删除）" show-icon />
+
+    <el-alert
+      v-if="clock && tests.length > 0"
+      :type="alertType(release.state)"
+      :closable="false"
+      show-icon
+      :title="`放行状态（按现行标准重算）：${release.label}`"
+      :description="release.reason"
+    />
 
     <div v-if="clock" class="grid">
       <el-card shadow="never">
@@ -136,8 +176,32 @@ onMounted(async () => {
               <div v-for="t in tests" :key="t.id" class="test-block">
                 <div class="card-head">
                   <strong>{{ new Date(t.testedAt).toLocaleString('zh-CN') }}</strong>
-                  <el-tag size="small" type="success">{{ t.conclusion || judgeTest(t.rate, t.beatError, t.amplitude) }}</el-tag>
+                  <el-tag :type="verdictTagType(testJudgement(t).verdict, testJudgement(t).review)" size="small">
+                    {{ testJudgement(t).review ? '待复核' : testJudgement(t).verdict }}
+                  </el-tag>
+                  <el-tag size="small" effect="plain" type="info">
+                    {{ bindSourceLabel(t) }}
+                    <template v-if="testJudgement(t).standard">
+                      ·「{{ testJudgement(t).standard!.name }}」{{ formatDate(testJudgement(t).standard!.effectiveAt) }} 生效
+                    </template>
+                  </el-tag>
+                  <el-tag
+                    v-if="!testJudgement(t).review && t.verdictSnapshot && t.verdictSnapshot !== testJudgement(t).verdict"
+                    size="small"
+                    type="warning"
+                    effect="plain"
+                  >
+                    绑定时曾判：{{ t.verdictSnapshot }}
+                  </el-tag>
                   <span class="muted">日差 {{ t.rate }} s/d · 摆幅 {{ t.amplitude }}° · 偏振 {{ t.beatError }} ms</span>
+                </div>
+                <div class="judge-reason">{{ testJudgement(t).reason }}</div>
+                <div
+                  v-if="presentVerdict(t) && presentVerdict(t)!.verdict !== testJudgement(t).verdict && !testJudgement(t).review"
+                  class="judge-reason present"
+                >
+                  现行标准「{{ presentVerdict(t)!.std.name }}」重算为：{{ presentVerdict(t)!.verdict }}
+                  <span v-if="presentVerdict(t)!.verdict !== '合格'">（不再满足放行条件）</span>
                 </div>
                 <RateChart :readings="t.positions" />
               </div>
@@ -195,5 +259,14 @@ onMounted(async () => {
 }
 .test-block {
   margin-bottom: 16px;
+}
+.judge-reason {
+  margin: 6px 0;
+  font-size: 12.5px;
+  color: #6a7280;
+  line-height: 1.6;
+}
+.judge-reason.present {
+  color: #b8860b;
 }
 </style>

@@ -1,8 +1,10 @@
 import { defineStore } from 'pinia';
 import { db, toPlain } from '../utils/db';
 import { newId } from '../utils/id';
+import { currentStandard, judgeBy } from '../utils/judgement';
+import { useStandardStore } from './standardStore';
 import type { RepairStep, RepairStepDraft } from '../types/step';
-import type { TimekeepingTest, TimekeepingTestDraft } from '../types/test';
+import type { TimekeepingTest } from '../types/test';
 
 interface StepState {
   items: RepairStep[];
@@ -57,8 +59,23 @@ export const useStepStore = defineStore('step', {
         return it;
       });
     },
-    async addTest(draft: TimekeepingTestDraft) {
-      const record: TimekeepingTest = { ...toPlain(draft), id: newId('tst') };
+    /**
+     * 保存走时测试：自动绑定保存时刻生效的标准版本。
+     * 无现行版本时落库为无绑定记录（bindSource='legacy'），页面判待复核。
+     */
+    async addTest(draft: Omit<TimekeepingTest, 'id' | 'standardId' | 'bindSource' | 'verdictSnapshot'>) {
+      const standardStore = useStandardStore();
+      if (!standardStore.loaded) await standardStore.load();
+      const standard = currentStandard(standardStore.items);
+      const record: TimekeepingTest = {
+        ...toPlain(draft),
+        id: newId('tst'),
+        standardId: standard?.id ?? '',
+        bindSource: standard ? 'current' : 'legacy',
+        verdictSnapshot: standard
+          ? judgeBy(draft.rate, draft.beatError, draft.amplitude, standard)
+          : '',
+      };
       await db.tests.put(toPlain(record));
       this.tests = [record, ...this.tests];
       return record;
