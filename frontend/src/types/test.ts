@@ -14,10 +14,11 @@ export interface PositionReading {
   beatError: number;
 }
 
-/** 走时测试记录 */
+/** 走时测试记录（判定结论全部来自所绑定的标准版本，见 utils/judge.ts） */
 export interface TimekeepingTest {
   id: string;
   clockId: string;
+  /** 测试时刻：保存时据此找到当时生效的标准版本 */
   testedAt: number;
   /** 摆幅 ° */
   amplitude: number;
@@ -28,14 +29,16 @@ export interface TimekeepingTest {
   positions: PositionReading[];
   /** 动力储备 h */
   powerReserve: number;
-  conclusion: string;
+  /** 保存时绑定的标准版本 id；早期无版本记录的数据回填不到时为空，reviewPending=true */
+  standardId?: string;
+  /** 绑定版本的编号快照（如标准版本事后删除编号仍可追溯） */
+  standardCode?: string;
+  /** 绑定时生效的阈值快照，作为判定依据留存 */
+  thresholds?: import('./standard').JudgeThresholds;
+  /** 旧数据回填不到当时版本：true 表示结论待人工复核，不参与放行 */
+  reviewPending?: boolean;
+  /** 人工备注（原 conclusion 字段保留，不再作为系统判定结论） */
+  conclusion?: string;
 }
 
 export type TimekeepingTestDraft = Omit<TimekeepingTest, 'id'>;
-
-/** 走时合格判定 */
-export function judgeTest(rate: number, beatError: number, amplitude: number): string {
-  if (Math.abs(rate) <= 10 && beatError <= 0.8 && amplitude >= 250) return '合格';
-  if (Math.abs(rate) <= 30 && beatError <= 1.2) return '可用（需再调）';
-  return '不合格';
-}

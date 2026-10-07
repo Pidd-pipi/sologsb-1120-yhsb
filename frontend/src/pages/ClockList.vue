@@ -4,18 +4,24 @@ import { useRouter } from 'vue-router';
 import { ElMessage } from 'element-plus';
 import { useClockStore } from '../stores/clockStore';
 import { useStepStore } from '../stores/stepStore';
+import { useStandardStore } from '../stores/standardStore';
 import { useClockSearch } from '../hooks/useClockSearch';
+import { evaluateClockRelease, releaseTagType } from '../utils/judge';
 import ClockCard from '../components/common/ClockCard.vue';
-import { CLOCK_KINDS, CONDITION_GRADES, type ClockDraft, type ClockKind, type ConditionGrade } from '../types/clock';
+import { CLOCK_KINDS, CONDITION_GRADES, type ClockDraft } from '../types/clock';
 
 const router = useRouter();
 const clockStore = useClockStore();
 const stepStore = useStepStore();
+const standardStore = useStandardStore();
 const { filters, result, options, reset } = useClockSearch();
 
 const REPAIR_STATES = ['未开工', '维修中', '待测试', '已完成'] as const;
+const RELEASE_FILTERS = ['全部', '可放行', '不予放行', '待复核', '未测试'] as const;
 
 type RepairState = (typeof REPAIR_STATES)[number];
+
+const releaseFilter = ref<(typeof RELEASE_FILTERS)[number]>('全部');
 
 /** 由工序与走时测试推导修复状态，用于台账分栏 */
 function repairStateOf(clockId: string): RepairState {
@@ -29,11 +35,27 @@ function repairStateOf(clockId: string): RepairState {
   return '未开工';
 }
 
+/** 放行状态（标准修改后经标准/测试 store 重拉自动重算） */
+function releaseOf(clockId: string) {
+  const tests = stepStore.tests.filter((t) => t.clockId === clockId);
+  return evaluateClockRelease(tests, standardStore.items);
+}
+
+const filtered = computed(() => {
+  if (releaseFilter.value === '全部') return result.value;
+  return result.value.filter((it) => releaseOf(it.id).release === releaseFilter.value);
+});
+
 const columns = computed(() =>
   REPAIR_STATES.map((state) => ({
     state,
-    rows: result.value.filter((it) => repairStateOf(it.id) === state),
+    rows: filtered.value.filter((it) => repairStateOf(it.id) === state),
   })),
+);
+
+/** 台账汇总：可放行（可交付）台数 */
+const releasableCount = computed(
+  () => clockStore.items.filter((it) => releaseOf(it.id).release === '可放行').length,
 );
 
 const dialogVisible = ref(false);
@@ -79,7 +101,15 @@ async function submit() {
 onMounted(() => {
   void clockStore.load();
   void stepStore.load();
+  void standardStore.load();
 });
+
+function footerOf(clockId: string): string {
+  const total = stepStore.items.filter((s) => s.clockId === clockId).length;
+  const done = stepStore.items.filter((s) => s.clockId === clockId && s.state === 'done').length;
+  const testCount = stepStore.tests.filter((t) => t.clockId === clockId).length;
+  return `工序 ${done}/${total} · 走时测试 ${testCount} 次`;
+}
 </script>
 
 <template>
@@ -87,7 +117,8 @@ onMounted(() => {
     <div class="header">
       <h2>钟表台账</h2>
       <el-tag>共 {{ clockStore.items.length }} 台</el-tag>
-      <el-tag type="info" effect="plain">筛选命中 {{ result.length }} 台</el-tag>
+      <el-tag type="info" effect="plain">筛选命中 {{ filtered.length }} 台</el-tag>
+      <el-tag type="success">可放行（可交付）{{ releasableCount }} 台</el-tag>
       <div class="spacer" />
       <el-button type="primary" @click="openDialog">建档</el-button>
     </div>
@@ -115,6 +146,11 @@ onMounted(() => {
             <el-option v-for="g in CONDITION_GRADES" :key="g" :label="g" :value="g" />
           </el-select>
         </el-form-item>
+        <el-form-item label="放行状态">
+          <el-select v-model="releaseFilter" style="width: 130px">
+            <el-option v-for="r in RELEASE_FILTERS" :key="r" :label="r" :value="r" />
+          </el-select>
+        </el-form-item>
         <el-form-item label="年代区间">
           <el-input v-model="filters.yearFrom" placeholder="起" style="width: 90px" />
           <span style="margin: 0 6px">—</span>
@@ -139,15 +175,17 @@ onMounted(() => {
           <strong>{{ col.state }}</strong>
           <el-tag size="small" type="info">{{ col.rows.length }}</el-tag>
         </div>
-        <ClockCard
-          v-for="item in col.rows"
-          :key="item.id"
-          :item="item"
-          :footer="`工序 ${stepStore.items.filter((s) => s.clockId === item.id && s.state === 'done').length}/${
-            stepStore.items.filter((s) => s.clockId === item.id).length
-          } · 走时测试 ${stepStore.tests.filter((t) => t.clockId === item.id).length} 次`"
-          @open="(id) => router.push(`/clocks/${id}`)"
-        />
+        <div v-for="item in col.rows" :key="item.id" class="card-wrap" @click="router.push(`/clocks/${item.id}`)">
+          <ClockCard :item="item" :footer="footerOf(item.id)" />
+          <div class="release-line">
+            <el-tag :type="releaseTagType(releaseOf(item.id).release)" size="small" effect="dark">
+              放行：{{ releaseOf(item.id).release }}
+            </el-tag>
+            <el-tooltip :content="releaseOf(item.id).basis" placement="top" :show-after="100">
+              <span class="basis-link">判定依据</span>
+            </el-tooltip>
+          </div>
+        </div>
         <el-empty v-if="col.rows.length === 0" description="暂无" :image-size="60" />
       </div>
     </div>
@@ -234,5 +272,21 @@ onMounted(() => {
   align-items: center;
   gap: 8px;
   font-size: 15px;
+}
+.card-wrap {
+  cursor: pointer;
+}
+.release-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 4px;
+  padding: 0 2px;
+}
+.basis-link {
+  font-size: 12px;
+  color: #8a6d1d;
+  border-bottom: 1px dashed #c9a94e;
+  cursor: help;
 }
 </style>

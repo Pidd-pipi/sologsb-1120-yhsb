@@ -1,7 +1,10 @@
 <script setup lang="ts">
-import { computed } from 'vue';
+import { computed, onMounted, onUnmounted } from 'vue';
 import { useRoute, useRouter } from 'vue-router';
 import { readDbVersion } from './utils/db';
+import { subscribeDataChange } from './utils/crossTab';
+import { useStandardStore } from './stores/standardStore';
+import { useStepStore } from './stores/stepStore';
 
 const route = useRoute();
 const router = useRouter();
@@ -11,6 +14,7 @@ const activeMenu = computed(() => {
   if (route.path.startsWith('/steps')) return '/steps/new';
   if (route.path.startsWith('/parts')) return '/parts';
   if (route.path.startsWith('/tests')) return '/tests';
+  if (route.path.startsWith('/standards')) return '/standards';
   return '/clocks';
 });
 
@@ -23,6 +27,18 @@ function onSelect(index: string) {
   }
   void router.push(index);
 }
+
+// 其他页签修改标准/测试后，本页签重拉数据，放行状态与判定依据随之重算
+const standardStore = useStandardStore();
+const stepStore = useStepStore();
+let unsubscribe: (() => void) | undefined;
+onMounted(() => {
+  unsubscribe = subscribeDataChange((name) => {
+    if (name === 'standards') void standardStore.load();
+    if (name === 'tests') void stepStore.load();
+  });
+});
+onUnmounted(() => unsubscribe?.());
 </script>
 
 <template>
@@ -34,6 +50,7 @@ function onSelect(index: string) {
         <el-menu-item index="/steps/new">工序录入</el-menu-item>
         <el-menu-item index="/parts">零件清单</el-menu-item>
         <el-menu-item index="/tests">走时测试</el-menu-item>
+        <el-menu-item index="/standards">合格标准</el-menu-item>
       </el-menu>
       <el-tag size="small" effect="plain">本地结构版本 v{{ version }}</el-tag>
     </el-header>

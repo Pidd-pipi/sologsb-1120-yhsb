@@ -1,6 +1,8 @@
 import { defineStore } from 'pinia';
 import { db, toPlain } from '../utils/db';
 import { newId } from '../utils/id';
+import { broadcastDataChange } from '../utils/crossTab';
+import { standardAt } from '../utils/judge';
 import type { RepairStep, RepairStepDraft } from '../types/step';
 import type { TimekeepingTest, TimekeepingTestDraft } from '../types/test';
 
@@ -57,15 +59,34 @@ export const useStepStore = defineStore('step', {
         return it;
       });
     },
+    /**
+     * 保存走时测试：以 testedAt 为准绑定当时生效的标准版本并留存阈值快照。
+     * 结论不随录入文本走，全部由所绑版本重算（见 utils/judge.ts）。
+     */
     async addTest(draft: TimekeepingTestDraft) {
-      const record: TimekeepingTest = { ...toPlain(draft), id: newId('tst') };
+      // 直接从库内取最新版本表，避免其他页签刚改标准而本页签内存尚未刷新
+      const standards = await db.standards.toArray();
+      const std = standardAt(standards, draft.testedAt);
+      const bound: TimekeepingTestDraft = std
+        ? {
+            ...toPlain(draft),
+            standardId: std.id,
+            standardCode: std.code,
+            thresholds: { ...std.thresholds },
+            reviewPending: false,
+          }
+        : { ...toPlain(draft), standardId: '', standardCode: '', reviewPending: true };
+
+      const record: TimekeepingTest = { ...bound, id: newId('tst') };
       await db.tests.put(toPlain(record));
       this.tests = [record, ...this.tests];
+      broadcastDataChange('tests');
       return record;
     },
     async removeTest(id: string) {
       await db.tests.delete(id);
       this.tests = this.tests.filter((it) => it.id !== id);
+      broadcastDataChange('tests');
     },
   },
 });
